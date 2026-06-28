@@ -10,11 +10,49 @@ from flask import Flask, request, render_template_string
 # ✅ KONFIGURASI
 # ==============================================
 BASE_URL    = "https://hosting.arxan.app"
+MAILTM_API  = "https://api.mail.tm"
+PASS_MAILTM = "Akun77@@"
+DOMAIN_TM   = "web-library.net"
 USER_AGENT  = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36"
 TIMEOUT     = 20
-MAKS_COBA   = 2  # Coba ulang kalau gagal
+MAKS_COBA   = 2
 
 app = Flask(__name__)
+
+# ==============================================
+# 📧 BUAT MAIL.TM SAJA (TANPA CEK PESAN)
+# ==============================================
+def rand_str(p=10):
+    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=p))
+
+def buat_mail_tm():
+    while True:
+        alamat = f"{rand_str()}@{DOMAIN_TM}"
+        try:
+            # Buat akun
+            r = requests.post(
+                f"{MAILTM_API}/accounts",
+                json={"address": alamat, "password": PASS_MAILTM},
+                headers={"Content-Type": "application/json"},
+                timeout=TIMEOUT
+            )
+            if r.status_code == 201:
+                # Cek login valid
+                r_login = requests.post(
+                    f"{MAILTM_API}/token",
+                    json={"address": alamat, "password": PASS_MAILTM},
+                    headers={"Content-Type": "application/json"},
+                    timeout=TIMEOUT
+                )
+                if r_login.status_code == 200:
+                    return alamat, PASS_MAILTM
+            elif "already used" in r.text.lower():
+                time.sleep(0.3)
+                continue
+            else:
+                time.sleep(0.5)
+        except:
+            time.sleep(0.8)
 
 # ==============================================
 # 🎲 DATA ACAK
@@ -36,7 +74,7 @@ def data_acak():
     }
 
 # ==============================================
-# 📋 AMBIL TOKEN + VALIDASI
+# 📋 AMBIL TOKEN
 # ==============================================
 def get_token(sesi):
     for _ in range(MAKS_COBA):
@@ -52,7 +90,7 @@ def get_token(sesi):
     return None
 
 # ==============================================
-# ✅ CEK KETERSEDIAAN DOMAIN
+# ✅ CEK DOMAIN TERSEDIA
 # ==============================================
 def cek_domain_tersedia(sesi, token, domain):
     try:
@@ -63,27 +101,26 @@ def cek_domain_tersedia(sesi, token, domain):
                 "X-Requested-With": "XMLHttpRequest",
                 "Referer": f"{BASE_URL}/cart.php?a=add&domain=register"
             },
-            data={
-                "token": token,
-                "a": "checkDomain",
-                "domain": domain,
-                "type": "domain"
-            },
+            data={"token": token, "a": "checkDomain", "domain": domain, "type": "domain"},
             timeout=TIMEOUT
         )
-        # Kalau ada tulisan "Available" berarti bisa dipakai
         return res.status_code == 200 and "available" in res.text.lower()
     except:
         return False
 
 # ==============================================
-# 🚀 PROSES DOMAIN LENGKAP
+# 🚀 PROSES DOMAIN
 # ==============================================
-def proses_domain(domain, email_input, sandi_akun):
+def proses_domain(domain, sandi_akun):
     hasil = {"waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "domain": domain}
-
     sesi = requests.Session()
     sesi.headers.update({"User-Agent": USER_AGENT})
+
+    # Buat email Mail.TM otomatis
+    email_tm, sandi_tm = buat_mail_tm()
+    if not email_tm:
+        hasil["status"] = "❌ Gagal buat Mail.TM"
+        return hasil
 
     # Ambil token
     token = get_token(sesi)
@@ -91,18 +128,17 @@ def proses_domain(domain, email_input, sandi_akun):
         hasil["status"] = "❌ Gagal dapat token"
         return hasil
 
-    # Cek dulu domainnya
+    # Cek domain
     if not cek_domain_tersedia(sesi, token, domain):
-        hasil["status"] = "❌ Domain TIDAK tersedia / sudah dipakai"
+        hasil["status"] = "❌ Domain tidak tersedia"
         return hasil
 
-    # Siap data akun
+    # Siap data
     akun = data_acak()
-    akun["email"] = email_input
+    akun["email"] = email_tm
     akun["password"] = akun["password2"] = sandi_akun
 
     try:
-        # Masukkan ke keranjang
         sesi.post(
             f"{BASE_URL}/cart.php",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -110,7 +146,6 @@ def proses_domain(domain, email_input, sandi_akun):
             timeout=TIMEOUT
         )
 
-        # Set nameserver
         sesi.post(
             f"{BASE_URL}/cart.php?a=confdomains",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -118,7 +153,6 @@ def proses_domain(domain, email_input, sandi_akun):
             timeout=TIMEOUT
         )
 
-        # Set wilayah Indonesia
         sesi.post(
             f"{BASE_URL}/cart.php?a=setstateandcountry&e=false",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -126,8 +160,7 @@ def proses_domain(domain, email_input, sandi_akun):
             timeout=TIMEOUT
         )
 
-        # Proses checkout
-        res_checkout = sesi.post(
+        res = sesi.post(
             f"{BASE_URL}/cart.php?a=checkout",
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
@@ -147,22 +180,21 @@ def proses_domain(domain, email_input, sandi_akun):
             allow_redirects=True
         )
 
-        # Cek apakah berhasil dapat invoice
-        inv = re.search(r'viewinvoice\.php\?id=(\d+)', res_checkout.text)
+        inv = re.search(r'viewinvoice\.php\?id=(\d+)', res.text)
         if inv:
             hasil.update({
-                "email_akun": email_input,
+                "email_akun": email_tm,
                 "pw_akun": sandi_akun,
                 "link": f"{BASE_URL}/viewinvoice.php?id={inv.group(1)}",
-                "status": "✅ BERHASIL! Domain siap dipakai"
+                "email_tm": email_tm,
+                "pw_tm": sandi_tm,
+                "status": "✅ Berhasil"
             })
         else:
-            hasil["status"] = "❌ Gagal proses checkout"
+            hasil["status"] = "❌ Gagal checkout"
 
-    except requests.exceptions.ReadTimeout:
-        hasil["status"] = "❌ Timeout / Server lambat"
     except Exception as e:
-        hasil["status"] = f"❌ Error: {str(e)[:50]}"
+        hasil["status"] = f"❌ Error: {str(e)[:40]}"
 
     return hasil
 
@@ -178,7 +210,7 @@ def index():
         try:
             jumlah = int(request.form.get('jumlah', 0))
             sandi = request.form.get('sandi', '').strip()
-            daftar = []
+            daftar_domain = []
 
             if jumlah < 1:
                 pesan = "❌ Jumlah minimal 1!"
@@ -187,16 +219,15 @@ def index():
             else:
                 for i in range(1, jumlah + 1):
                     d = request.form.get(f'domain_{i}', '').strip().lower()
-                    e = request.form.get(f'email_{i}', '').strip().lower()
-                    if d and "." in d and "@" in e:
-                        daftar.append((d, e))
+                    if d and "." in d:
+                        daftar_domain.append(d)
 
-                if not daftar:
-                    pesan = "❌ Masukkan domain & email yang valid!"
+                if not daftar_domain:
+                    pesan = "❌ Masukkan domain yang valid!"
                 else:
-                    for domain, email in daftar:
-                        hasil.append(proses_domain(domain, email, sandi))
-                        time.sleep(1)  # Kasih jeda lebih aman
+                    for domain in daftar_domain:
+                        hasil.append(proses_domain(domain, sandi))
+                        time.sleep(1)
 
         except Exception as e:
             pesan = f"❌ Kesalahan: {str(e)}"
@@ -233,61 +264,40 @@ def index():
 <body>
     <div class="container">
         <h1>🚀 Creat Domain Murah</h1>
-
-        {% if pesan %}
-        <div class="pesan {{ 'error' if '❌' in pesan else 'sukses' }}">{{ pesan }}</div>
-        {% endif %}
-
+        {% if pesan %}<div class="pesan {{ 'error' if '❌' in pesan else 'sukses' }}">{{ pesan }}</div>{% endif %}
         <form method="POST">
-            <div class="form-group">
-                <label>🔢 Jumlah Domain:</label>
-                <input type="number" name="jumlah" min="1" required placeholder="Contoh: 2">
-            </div>
-
-            <div class="form-group">
-                <label>🔑 Password Semua Akun:</label>
-                <input type="text" name="sandi" required placeholder="Minimal 6 karakter">
-            </div>
-
-            <div id="list-input"></div>
-
+            <div class="form-group"><label>🔢 Jumlah Domain:</label><input type="number" name="jumlah" min="1" required placeholder="Contoh: 3"></div>
+            <div class="form-group"><label>🔑 Password Semua Akun:</label><input type="text" name="sandi" required placeholder="Minimal 6 karakter"></div>
+            <div id="list-domain"></div>
             <button type="submit">✨ Proses Sekarang</button>
         </form>
-
         {% if hasil %}
         <div class="hasil">
             <h2>📋 Hasil Pembuatan</h2>
             {% for h in hasil %}
             <div class="kartu">
                 <p><strong>🌐 Domain:</strong> {{ h.domain or '-' }}</p>
-                <p><strong>📧 Email Terdaftar:</strong> {{ h.email_akun or '-' }}</p>
+                <p><strong>📧 Email Akun:</strong> {{ h.email_akun or '-' }}</p>
                 <p><strong>🔑 Password Akun:</strong> {{ h.pw_akun or '-' }}</p>
-                {% if h.link %}
-                <p><strong>🔗 Link Invoice:</strong> <a href="{{ h.link }}" target="_blank">Buka Invoice</a></p>
-                {% endif %}
+                <p><strong>🔗 Link Invoice:</strong> <a href="{{ h.link or '#' }}" target="_blank">Buka Invoice</a></p>
+                <p><strong>📧 Mail.TM:</strong> {{ h.email_tm or '-' }}</p>
+                <p><strong>🔑 Pass Mail.TM:</strong> {{ h.pw_tm or '-' }}</p>
                 <p><strong>📊 Status:</strong> {{ h.status }}</p>
             </div>
             {% endfor %}
         </div>
         {% endif %}
     </div>
-
     <script>
         const jmlInput = document.querySelector('input[name="jumlah"]');
-        const listDiv = document.getElementById('list-input');
-
+        const listDiv = document.getElementById('list-domain');
         jmlInput.addEventListener('input', () => {
             const jml = parseInt(jmlInput.value) || 0;
             listDiv.innerHTML = '';
-            for(let i = 1; i <= jml; i++) {
+            for(let i=1; i<=jml; i++){
                 const div = document.createElement('div');
                 div.className = 'form-group';
-                div.innerHTML = `
-                    <label>📝 Domain ke-${i}:</label>
-                    <input type="text" name="domain_${i}" required placeholder="Contoh: namamu.biz.id">
-                    <label style="margin-top:8px;">📧 Email ke-${i}:</label>
-                    <input type="email" name="email_${i}" required placeholder="Contoh: kamu@gmail.com">
-                `;
+                div.innerHTML = `<label>📝 Domain ke-${i}:</label><input type="text" name="domain_${i}" required placeholder="Contoh: namamu.biz.id">`;
                 listDiv.appendChild(div);
             }
         });
