@@ -12,15 +12,15 @@ from flask import Flask, request, render_template_string
 BASE_URL    = "https://hosting.arxan.app"
 USER_AGENT  = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36"
 TIMEOUT     = 20
+MAKS_COBA   = 2  # Coba ulang kalau gagal
 
 app = Flask(__name__)
 
 # ==============================================
-# 🎲 NAMA & DATA ACAK
+# 🎲 DATA ACAK
 # ==============================================
 def buat_nama_acak(panjang_min=4, panjang_maks=8):
-    panjang = random.randint(panjang_min, panjang_maks)
-    return ''.join(random.choices(string.ascii_lowercase, k=panjang)).capitalize()
+    return ''.join(random.choices(string.ascii_lowercase, k=random.randint(panjang_min, panjang_maks))).capitalize()
 
 def data_acak():
     return {
@@ -36,42 +36,73 @@ def data_acak():
     }
 
 # ==============================================
-# 📋 AMBIL TOKEN
+# 📋 AMBIL TOKEN + VALIDASI
 # ==============================================
 def get_token(sesi):
-    try:
-        r = sesi.get(f"{BASE_URL}/cart.php?a=add&domain=register", timeout=TIMEOUT)
-        token = re.search(r'name="token" value="([a-f0-9]{32,})"', r.text)
-        return token.group(1) if token else None
-    except:
-        return None
+    for _ in range(MAKS_COBA):
+        try:
+            r = sesi.get(f"{BASE_URL}/cart.php?a=add&domain=register", timeout=TIMEOUT)
+            if r.status_code == 200:
+                token = re.search(r'name="token" value="([a-f0-9]{32,})"', r.text)
+                if token:
+                    return token.group(1)
+        except:
+            pass
+        time.sleep(0.8)
+    return None
 
 # ==============================================
-# 🚀 PROSES SATU DOMAIN
+# ✅ CEK KETERSEDIAAN DOMAIN
+# ==============================================
+def cek_domain_tersedia(sesi, token, domain):
+    try:
+        res = sesi.post(
+            f"{BASE_URL}/index.php?rp=/domain/check",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": f"{BASE_URL}/cart.php?a=add&domain=register"
+            },
+            data={
+                "token": token,
+                "a": "checkDomain",
+                "domain": domain,
+                "type": "domain"
+            },
+            timeout=TIMEOUT
+        )
+        # Kalau ada tulisan "Available" berarti bisa dipakai
+        return res.status_code == 200 and "available" in res.text.lower()
+    except:
+        return False
+
+# ==============================================
+# 🚀 PROSES DOMAIN LENGKAP
 # ==============================================
 def proses_domain(domain, email_input, sandi_akun):
+    hasil = {"waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "domain": domain}
+
     sesi = requests.Session()
     sesi.headers.update({"User-Agent": USER_AGENT})
-    hasil = {"waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
-    # Pakai email yang dimasukkan manual
-    akun = data_acak()
-    akun["email"] = email_input
-    akun["password"] = akun["password2"] = sandi_akun
-
+    # Ambil token
     token = get_token(sesi)
     if not token:
         hasil["status"] = "❌ Gagal dapat token"
         return hasil
 
-    try:
-        sesi.post(
-            f"{BASE_URL}/index.php?rp=/domain/check",
-            headers={"Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest"},
-            data={"token": token, "a": "checkDomain", "domain": domain, "type": "domain"},
-            timeout=TIMEOUT
-        )
+    # Cek dulu domainnya
+    if not cek_domain_tersedia(sesi, token, domain):
+        hasil["status"] = "❌ Domain TIDAK tersedia / sudah dipakai"
+        return hasil
 
+    # Siap data akun
+    akun = data_acak()
+    akun["email"] = email_input
+    akun["password"] = akun["password2"] = sandi_akun
+
+    try:
+        # Masukkan ke keranjang
         sesi.post(
             f"{BASE_URL}/cart.php",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -79,6 +110,7 @@ def proses_domain(domain, email_input, sandi_akun):
             timeout=TIMEOUT
         )
 
+        # Set nameserver
         sesi.post(
             f"{BASE_URL}/cart.php?a=confdomains",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -86,6 +118,7 @@ def proses_domain(domain, email_input, sandi_akun):
             timeout=TIMEOUT
         )
 
+        # Set wilayah Indonesia
         sesi.post(
             f"{BASE_URL}/cart.php?a=setstateandcountry&e=false",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -93,7 +126,8 @@ def proses_domain(domain, email_input, sandi_akun):
             timeout=TIMEOUT
         )
 
-        res = sesi.post(
+        # Proses checkout
+        res_checkout = sesi.post(
             f"{BASE_URL}/cart.php?a=checkout",
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
@@ -113,14 +147,14 @@ def proses_domain(domain, email_input, sandi_akun):
             allow_redirects=True
         )
 
-        inv = re.search(r'viewinvoice\.php\?id=(\d+)', res.text)
+        # Cek apakah berhasil dapat invoice
+        inv = re.search(r'viewinvoice\.php\?id=(\d+)', res_checkout.text)
         if inv:
             hasil.update({
-                "domain": domain,
                 "email_akun": email_input,
                 "pw_akun": sandi_akun,
                 "link": f"{BASE_URL}/viewinvoice.php?id={inv.group(1)}",
-                "status": "✅ Berhasil"
+                "status": "✅ BERHASIL! Domain siap dipakai"
             })
         else:
             hasil["status"] = "❌ Gagal proses checkout"
@@ -128,7 +162,7 @@ def proses_domain(domain, email_input, sandi_akun):
     except requests.exceptions.ReadTimeout:
         hasil["status"] = "❌ Timeout / Server lambat"
     except Exception as e:
-        hasil["status"] = f"❌ Error: {str(e)[:40]}"
+        hasil["status"] = f"❌ Error: {str(e)[:50]}"
 
     return hasil
 
@@ -162,7 +196,7 @@ def index():
                 else:
                     for domain, email in daftar:
                         hasil.append(proses_domain(domain, email, sandi))
-                        time.sleep(0.7)
+                        time.sleep(1)  # Kasih jeda lebih aman
 
         except Exception as e:
             pesan = f"❌ Kesalahan: {str(e)}"
@@ -228,7 +262,9 @@ def index():
                 <p><strong>🌐 Domain:</strong> {{ h.domain or '-' }}</p>
                 <p><strong>📧 Email Terdaftar:</strong> {{ h.email_akun or '-' }}</p>
                 <p><strong>🔑 Password Akun:</strong> {{ h.pw_akun or '-' }}</p>
-                <p><strong>🔗 Link Invoice:</strong> <a href="{{ h.link or '#' }}" target="_blank">Buka Invoice</a></p>
+                {% if h.link %}
+                <p><strong>🔗 Link Invoice:</strong> <a href="{{ h.link }}" target="_blank">Buka Invoice</a></p>
+                {% endif %}
                 <p><strong>📊 Status:</strong> {{ h.status }}</p>
             </div>
             {% endfor %}
