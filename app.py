@@ -1,6 +1,5 @@
 from flask import Flask, render_template_string, request, jsonify
 import re
-import json
 import time
 import random
 import requests
@@ -16,6 +15,7 @@ app = Flask(__name__)
 # ==============================================
 BASE_URL = "https://hosting.arxan.app"
 TIMEOUT = 15
+MAX_DOMAIN = 50  # Batas maksimal per akun
 
 # 📋 Daftar User-Agent Acak
 USER_AGENTS = [
@@ -121,7 +121,7 @@ def proses_domain(domain, email, password):
     )
     time.sleep(0.4)
 
-    # Checkout
+    # Checkout dengan data akun yang SAMA
     res = sesi.post(
         f"{BASE_URL}/cart.php?a=checkout",
         headers={"Content-Type": "application/x-www-form-urlencoded", "Origin": BASE_URL, "Referer": f"{BASE_URL}/cart.php?a=confdomains"},
@@ -157,7 +157,7 @@ def proses_domain(domain, email, password):
     return hasil
 
 # ==============================================
-# 🎨 HALAMAN WEB + KOLOM INPUT
+# 🎨 HALAMAN WEB
 # ==============================================
 HALAMAN_HTML = """
 <!DOCTYPE html>
@@ -170,31 +170,32 @@ HALAMAN_HTML = """
 </head>
 <body class="bg-gray-100 min-h-screen p-4 md:p-8">
     <div class="max-w-3xl mx-auto bg-white rounded-xl shadow-lg p-6">
-        <h1 class="text-2xl font-bold text-center text-indigo-700 mb-6">📝 Tools Daftar Domain</h1>
+        <h1 class="text-2xl font-bold text-center text-indigo-700 mb-2">📝 Tools Daftar Domain</h1>
+        <p class="text-center text-gray-600 mb-6">✅ 1 Email = Bisa beli 2 - 50 domain sekaligus</p>
 
         <!-- Form Input -->
         <form id="formInput" class="space-y-4">
             <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Jumlah Domain</label>
-                <input type="number" id="jumlah" min="1" value="1" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Jumlah Domain (2 - 50)</label>
+                <input type="number" id="jumlah" min="2" max="50" value="2" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
             </div>
 
             <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Daftar Domain (pisah baris baru)</label>
-                <textarea id="daftar_domain" rows="3" placeholder="Contoh:&#10;namasaya.biz.id&#10;usahaanda.biz.id" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required></textarea>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Daftar Domain (1 baris = 1 domain)</label>
+                <textarea id="daftar_domain" rows="6" placeholder="Contoh:&#10;domain1.biz.id&#10;domain2.biz.id&#10;domain3.biz.id" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required></textarea>
             </div>
 
             <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
-                <input type="email" id="email" placeholder="contoh@mail.tm" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Email Akun (Sama untuk semua domain)</label>
+                <input type="email" id="email" placeholder="contoh@web-library.net" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
             </div>
 
             <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Password Akun</label>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Password Akun (Sama untuk semua)</label>
                 <input type="text" id="password" placeholder="Minimal 6 karakter" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
             </div>
 
-            <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 rounded-lg transition">🚀 Proses Sekarang</button>
+            <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 rounded-lg transition">🚀 Proses Semua Domain</button>
         </form>
 
         <!-- Hasil Proses -->
@@ -210,9 +211,21 @@ HALAMAN_HTML = """
             hasilDiv.innerHTML = '<div class="text-center py-6 text-gray-600">⏳ Sedang diproses, tunggu sebentar...</div>';
             hasilDiv.classList.remove('hidden');
 
+            const domains = document.getElementById('daftar_domain').value.split('\\n').map(d => d.trim()).filter(d => d);
+            const jumlah = parseInt(document.getElementById('jumlah').value);
+
+            if (domains.length !== jumlah) {
+                hasilDiv.innerHTML = `<div class="text-red-600 p-4 border rounded-lg">❌ Jumlah domain yang dimasukkan tidak sesuai dengan jumlah yang ditentukan!</div>`;
+                return;
+            }
+
+            if (jumlah < 2 || jumlah > 50) {
+                hasilDiv.innerHTML = `<div class="text-red-600 p-4 border rounded-lg">❌ Jumlah harus antara 2 sampai 50!</div>`;
+                return;
+            }
+
             const data = {
-                jumlah: document.getElementById('jumlah').value,
-                domains: document.getElementById('daftar_domain').value.split('\\n').map(d => d.trim()).filter(d => d),
+                domains: domains,
                 email: document.getElementById('email').value.trim(),
                 password: document.getElementById('password').value.trim()
             };
@@ -225,7 +238,7 @@ HALAMAN_HTML = """
                 });
                 const hasil = await res.json();
 
-                let html = `<h2 class="text-xl font-semibold text-green-700 mb-4">✅ Hasil Proses</h2>`;
+                let html = `<h2 class="text-xl font-semibold text-green-700 mb-4">✅ Hasil Proses ${hasil.length} Domain</h2>`;
                 hasil.forEach((item, i) => {
                     html += `
                     <div class="border rounded-lg p-4 mb-4 ${item.status.includes('✅') ? 'bg-green-50' : 'bg-red-50'}">
@@ -265,8 +278,7 @@ def jalankan_proses():
     hasil_akhir = []
     for domain in daftar_domain:
         hasil_akhir.append(proses_domain(domain, email, password))
-        time.sleep(0.8)
-
+        time.sleep(1)  # Jeda aman antar domain
     return jsonify(hasil_akhir)
 
 if __name__ == '__main__':
