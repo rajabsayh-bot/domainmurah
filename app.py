@@ -15,9 +15,8 @@ app = Flask(__name__)
 # ==============================================
 BASE_URL = "https://hosting.arxan.app"
 TIMEOUT = 15
-MAX_DOMAIN = 50  # Batas maksimal per akun
+MAX_DOMAIN = 50
 
-# 📋 Daftar User-Agent Acak
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0",
@@ -49,7 +48,10 @@ def buat_qr_base64(data):
     except:
         return ""
 
-def proses_domain(domain, email, password):
+# ==============================================
+# 🚀 PROSES SESUAI ALUR YANG DIMINTA
+# ==============================================
+def proses_semua(daftar_domain, email, password):
     ua = random.choice(USER_AGENTS)
     sesi = requests.Session()
     sesi.headers.update({
@@ -60,99 +62,167 @@ def proses_domain(domain, email, password):
 
     hasil = {
         "waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "domain": domain,
+        "jumlah": len(daftar_domain),
+        "daftar": daftar_domain,
         "email": email,
         "password": password,
-        "harga": "-",
+        "total": "Rp 0",
         "invoice": "-",
         "link": "-",
         "qris": "",
         "status": "",
-        "info": "-"
+        "info": ""
     }
 
+    # Ambil token awal
     token = get_token(sesi)
     if not token:
-        hasil["status"] = "❌ Gagal dapat token"
+        hasil["status"] = "❌ Gagal dapat token awal"
         return hasil
 
-    # Cek domain
+    total_harga = 0
+    domain_valid = []
+
+    # ✅ ALUR BARU: Cek & masukkan satu per satu, belum isi data
+    for idx, d in enumerate(daftar_domain, 1):
+        try:
+            # 1. Cek ketersediaan domain
+            cek = sesi.post(
+                f"{BASE_URL}/index.php?rp=/domain/check",
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Referer": f"{BASE_URL}/cart.php?a=add&domain=register"
+                },
+                data={"token": token, "a": "checkDomain", "domain": d, "type": "domain"},
+                timeout=TIMEOUT
+            )
+
+            if "available" not in cek.text.lower():
+                hasil["info"] += f"❌ {d} tidak tersedia | "
+                continue
+
+            # Ambil harga
+            hrg = re.search(r'Rp\s*(\d+)', cek.text)
+            if hrg:
+                harga = int(hrg.group(1))
+                total_harga += harga
+                hasil["info"] += f"✅ {d} = Rp {harga:,} | "
+
+            # 2. Masukkan ke keranjang, BELUM ke halaman isi data
+            sesi.post(
+                f"{BASE_URL}/cart.php",
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Referer": f"{BASE_URL}/cart.php?a=add&domain=register"
+                },
+                data={
+                    "a": "addToCart",
+                    "domain": d,
+                    "token": token,
+                    "years": 1,
+                    "idprotection": 0,
+                    "dnsmanagement": 0,
+                    "emailforwarding": 0,
+                    "whois": 0
+                },
+                timeout=TIMEOUT
+            )
+
+            domain_valid.append(d)
+            time.sleep(0.7)
+
+        except Exception as e:
+            hasil["info"] += f"⚠️ Gagal proses {d}: {str(e)[:30]} | "
+            continue
+
+    if not domain_valid:
+        hasil["status"] = "❌ Tidak ada domain yang berhasil dimasukkan ke keranjang"
+        return hasil
+
+    hasil["total"] = f"Rp {total_harga:,}"
+
+    # ✅ Kalau SEMUA sudah masuk, BARU lanjut ke halaman pesanan & isi data
     try:
-        r_cek = sesi.post(
-            f"{BASE_URL}/index.php?rp=/domain/check",
-            headers={"Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest", "Referer": f"{BASE_URL}/cart.php?a=add&domain=register"},
-            data={"token": token, "a": "checkDomain", "domain": domain, "type": "domain"},
+        # Buka halaman keranjang lengkap
+        sesi.get(f"{BASE_URL}/cart.php?a=view", timeout=TIMEOUT)
+        time.sleep(0.5)
+
+        # Atur nameserver sekali saja untuk semua
+        sesi.post(
+            f"{BASE_URL}/cart.php?a=confdomains",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "token": token,
+                "update": "true",
+                "domainns1": "kiki.bunny.net",
+                "domainns2": "coco.bunny.net"
+            },
             timeout=TIMEOUT
         )
-        if "available" in r_cek.text.lower():
-            harga = re.search(r'Rp\s*(\d+)', r_cek.text)
-            hasil["harga"] = f"Rp {harga.group(1)}" if harga else "Rp -"
+        time.sleep(0.5)
+
+        # Atur wilayah
+        sesi.post(
+            f"{BASE_URL}/cart.php?a=setstateandcountry&e=false",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={"token": token, "country": "ID", "state": "Jawa Barat", "ajax": 1},
+            timeout=TIMEOUT
+        )
+        time.sleep(0.5)
+
+        # ✅ BARU ISI SEMUA DATA & KLIK CHECKOUT
+        res = sesi.post(
+            f"{BASE_URL}/cart.php?a=checkout",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": BASE_URL,
+                "Referer": f"{BASE_URL}/cart.php?a=confdomains"
+            },
+            data={
+                "token": token,
+                "checkout": "true",
+                "custtype": "new",
+                "firstname": "Budi",
+                "lastname": "Santoso",
+                "email": email,
+                "emailoptin": "0",
+                "phonenumber": "628123456789",
+                "address1": "Jl. Mawar No.1",
+                "city": "Sukabumi",
+                "state": "Jawa Barat",
+                "postcode": "43111",
+                "country": "ID",
+                "password": password,
+                "password2": password,
+                "securityqid": "0",
+                "securityans": "",
+                "paymentmethod": "duitkupop",
+                "accepttos": "on",
+                "marketingoptin": "0"
+            },
+            timeout=25,
+            allow_redirects=True
+        )
+
+        # Ambil hasil 1 invoice saja
+        if "viewinvoice.php" in res.text or "viewinvoice.php" in res.url:
+            inv = re.search(r'viewinvoice\.php\?id=(\d+)', res.text + res.url)
+            if inv:
+                hasil["invoice"] = inv.group(1)
+                hasil["link"] = f"{BASE_URL}/viewinvoice.php?id={inv.group(1)}"
+                hasil["status"] = f"✅ Selesai | {len(domain_valid)} domain | 1 Invoice"
+                # Ambil QRIS
+                r_qr = sesi.get(hasil["link"], timeout=12)
+                kode_qr = re.search(r'data-qr="([^"]+)"', r_qr.text)
+                hasil["qris"] = buat_qr_base64(kode_qr.group(1)) if kode_qr else ""
         else:
-            hasil["status"] = "❌ Domain tidak tersedia"
-            return hasil
-    except:
-        hasil["status"] = "⚠️ Gagal cek domain"
-        return hasil
+            err = re.search(r'<div class="alert[^>]*>(.*?)</div>|<li>(.*?)</li>', res.text, re.S)
+            hasil["info"] += f" | Error checkout: {(err.group(1) or err.group(2) or 'Tidak diketahui')[:150]}"
+            hasil["status"] = "❌ Gagal buat invoice"
 
-    # Masuk keranjang
-    sesi.post(
-        f"{BASE_URL}/cart.php",
-        headers={"Content-Type": "application/x-www-form-urlencoded", "Referer": f"{BASE_URL}/cart.php?a=add&domain=register"},
-        data={"a": "addToCart", "domain": domain, "token": token, "years": 1, "idprotection": 0, "dnsmanagement": 0, "emailforwarding": 0, "whois": 0},
-        timeout=TIMEOUT
-    )
-    time.sleep(0.4)
-
-    # Set nameserver
-    sesi.post(
-        f"{BASE_URL}/cart.php?a=confdomains",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        data={"token": token, "update": "true", "domainns1": "kiki.bunny.net", "domainns2": "coco.bunny.net"},
-        timeout=TIMEOUT
-    )
-    time.sleep(0.4)
-
-    # Set wilayah
-    sesi.post(
-        f"{BASE_URL}/cart.php?a=setstateandcountry&e=false",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        data={"token": token, "country": "ID", "state": "Jawa Barat", "ajax": 1},
-        timeout=TIMEOUT
-    )
-    time.sleep(0.4)
-
-    # Checkout dengan data akun yang SAMA
-    res = sesi.post(
-        f"{BASE_URL}/cart.php?a=checkout",
-        headers={"Content-Type": "application/x-www-form-urlencoded", "Origin": BASE_URL, "Referer": f"{BASE_URL}/cart.php?a=confdomains"},
-        data={
-            "token": token, "checkout": "true", "custtype": "new",
-            "firstname": "Budi", "lastname": "Santoso",
-            "email": email, "emailoptin": "0",
-            "phonenumber": "628123456789", "address1": "Jl. Mawar No.1",
-            "city": "Sukabumi", "state": "Jawa Barat", "postcode": "43111", "country": "ID",
-            "password": password, "password2": password,
-            "securityqid": "0", "securityans": "",
-            "paymentmethod": "duitkupop", "accepttos": "on", "marketingoptin": "0"
-        },
-        timeout=20, allow_redirects=True
-    )
-
-    # Cek hasil
-    if "viewinvoice.php" in res.text or "viewinvoice.php" in res.url:
-        inv = re.search(r'viewinvoice\.php\?id=(\d+)', res.text + res.url)
-        if inv:
-            inv_id = inv.group(1)
-            hasil["invoice"] = inv_id
-            hasil["link"] = f"{BASE_URL}/viewinvoice.php?id={inv_id}"
-            hasil["status"] = "✅ Berhasil"
-            r_qr = sesi.get(hasil["link"], timeout=12)
-            kode_qr = re.search(r'data-qr="([^"]+)"', r_qr.text)
-            hasil["qris"] = buat_qr_base64(kode_qr.group(1)) if kode_qr else ""
-    else:
-        err = re.search(r'<div class="alert[^>]*>(.*?)</div>|<li>(.*?)</li>', res.text, re.S)
-        hasil["info"] = (err.group(1) or err.group(2) or "Tidak ada pesan error")[:180].strip()
-        hasil["status"] = "❌ Gagal"
+    except Exception as e:
+        hasil["status"] = f"❌ Kesalahan saat proses akhir: {str(e)[:50]}"
 
     return hasil
 
@@ -165,15 +235,14 @@ HALAMAN_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tools Daftar Domain</title>
+    <title>Tools Beli Domain</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 min-h-screen p-4 md:p-8">
     <div class="max-w-3xl mx-auto bg-white rounded-xl shadow-lg p-6">
-        <h1 class="text-2xl font-bold text-center text-indigo-700 mb-2">📝 Tools Daftar Domain</h1>
-        <p class="text-center text-gray-600 mb-6">✅ 1 Email = Bisa beli 2 - 50 domain sekaligus</p>
+        <h1 class="text-2xl font-bold text-center text-indigo-700 mb-2">📝 Alur: Masukkan Semua → Baru Checkout</h1>
+        <p class="text-center text-gray-600 mb-6">✅ Satu per satu masuk keranjang, semua selesai baru isi data & bayar</p>
 
-        <!-- Form Input -->
         <form id="formInput" class="space-y-4">
             <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Jumlah Domain (2 - 50)</label>
@@ -186,19 +255,18 @@ HALAMAN_HTML = """
             </div>
 
             <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Email Akun (Sama untuk semua domain)</label>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Email Akun</label>
                 <input type="email" id="email" placeholder="contoh@web-library.net" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
             </div>
 
             <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Password Akun (Sama untuk semua)</label>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Password Akun</label>
                 <input type="text" id="password" placeholder="Minimal 6 karakter" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
             </div>
 
-            <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 rounded-lg transition">🚀 Proses Semua Domain</button>
+            <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 rounded-lg transition">🚀 Mulai Proses</button>
         </form>
 
-        <!-- Hasil Proses -->
         <div id="hasil" class="mt-8 hidden"></div>
     </div>
 
@@ -208,19 +276,19 @@ HALAMAN_HTML = """
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
-            hasilDiv.innerHTML = '<div class="text-center py-6 text-gray-600">⏳ Sedang diproses, tunggu sebentar...</div>';
+            hasilDiv.innerHTML = '<div class="text-center py-6 text-gray-600">⏳ Memasukkan domain satu per satu ke keranjang...<br>Belum masuk ke halaman pembayaran!</div>';
             hasilDiv.classList.remove('hidden');
 
             const domains = document.getElementById('daftar_domain').value.split('\\n').map(d => d.trim()).filter(d => d);
             const jumlah = parseInt(document.getElementById('jumlah').value);
 
             if (domains.length !== jumlah) {
-                hasilDiv.innerHTML = `<div class="text-red-600 p-4 border rounded-lg">❌ Jumlah domain yang dimasukkan tidak sesuai dengan jumlah yang ditentukan!</div>`;
+                hasilDiv.innerHTML = `<div class="text-red-600 p-4 border rounded-lg">❌ Jumlah domain tidak sesuai!</div>`;
                 return;
             }
 
             if (jumlah < 2 || jumlah > 50) {
-                hasilDiv.innerHTML = `<div class="text-red-600 p-4 border rounded-lg">❌ Jumlah harus antara 2 sampai 50!</div>`;
+                hasilDiv.innerHTML = `<div class="text-red-600 p-4 border rounded-lg">❌ Minimal 2, maksimal 50 domain!</div>`;
                 return;
             }
 
@@ -236,27 +304,31 @@ HALAMAN_HTML = """
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(data)
                 });
-                const hasil = await res.json();
+                const h = await res.json();
 
-                let html = `<h2 class="text-xl font-semibold text-green-700 mb-4">✅ Hasil Proses ${hasil.length} Domain</h2>`;
-                hasil.forEach((item, i) => {
+                let html = `<h2 class="text-xl font-semibold text-green-700 mb-4">📄 Hasil Proses</h2>`;
+                html += `
+                <div class="border rounded-lg p-5 ${h.status.includes('✅') ? 'bg-green-50' : 'bg-red-50'}">
+                    <p><strong>Status:</strong> ${h.status}</p>
+                    <p><strong>Jumlah Diproses:</strong> ${h.jumlah}</p>
+                    <p><strong>Daftar Domain:</strong><br>• ${h.daftar.join('<br>• ')}</p>
+                    <p class="text-lg font-bold mt-3"><strong>Total Harga:</strong> ${h.total}</p>
+                    <p><strong>Email:</strong> ${h.email}</p>
+                    <p><strong>Password:</strong> ${h.password}</p>
+                    <p class="mt-2 text-sm text-gray-600"><strong>Proses Detail:</strong><br>${h.info}</p>`;
+
+                if (h.invoice !== '-') {
                     html += `
-                    <div class="border rounded-lg p-4 mb-4 ${item.status.includes('✅') ? 'bg-green-50' : 'bg-red-50'}">
-                        <h3 class="font-bold text-lg mb-2">No.${i+1} - ${item.domain}</h3>
-                        <p><strong>Status:</strong> ${item.status}</p>
-                        <p><strong>Harga:</strong> ${item.harga}</p>
-                        <p><strong>Email:</strong> ${item.email}</p>
-                        <p><strong>Password:</strong> ${item.password}</p>
-                        ${item.invoice !== '-' ? `<p><strong>Invoice:</strong> ${item.invoice}</p>` : ''}
-                        ${item.link !== '-' ? `<p><strong>Link:</strong> <a href="${item.link}" target="_blank" class="text-blue-600 underline">Buka Invoice</a></p>` : ''}
-                        ${item.qris ? `<p class="mt-2"><strong>QRIS:</strong><br><img src="data:image/png;base64,${item.qris}" class="mt-1 w-32 h-32"></p>` : ''}
-                        ${item.info !== '-' ? `<p class="mt-2 text-sm text-gray-700"><strong>Info:</strong> ${item.info}</p>` : ''}
-                    </div>`;
-                });
+                    <p class="mt-3"><strong>Invoice ID:</strong> ${h.invoice}</p>
+                    <p><strong>Link:</strong> <a href="${h.link}" target="_blank" class="text-blue-600 underline">Buka Invoice</a></p>`;
+                    if (h.qris) html += `<p class="mt-3"><strong>QRIS Bayar:</strong><br><img src="data:image/png;base64,${h.qris}" class="mt-1 w-36 h-36"></p>`;
+                }
 
+                html += `</div>`;
                 hasilDiv.innerHTML = html;
+
             } catch (err) {
-                hasilDiv.innerHTML = `<div class="text-red-600 p-4 border rounded-lg">❌ Terjadi kesalahan: ${err}</div>`;
+                hasilDiv.innerHTML = `<div class="text-red-600 p-4 border rounded-lg">❌ Terjadi kesalahan sistem: ${err}</div>`;
             }
         });
     </script>
@@ -274,12 +346,7 @@ def jalankan_proses():
     daftar_domain = data.get('domains', [])
     email = data.get('email', '')
     password = data.get('password', '')
-
-    hasil_akhir = []
-    for domain in daftar_domain:
-        hasil_akhir.append(proses_domain(domain, email, password))
-        time.sleep(1)  # Jeda aman antar domain
-    return jsonify(hasil_akhir)
+    return jsonify(proses_semua(daftar_domain, email, password))
 
 if __name__ == '__main__':
     app.run(debug=True)
