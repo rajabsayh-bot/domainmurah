@@ -1,24 +1,23 @@
-import os
+from flask import Flask, render_template_string, request, jsonify
 import re
 import json
 import time
 import random
 import requests
 from datetime import datetime
-from colorama import Fore, Style, init
+import qrcode
+from io import BytesIO
+import base64
 
-# Inisialisasi warna teks
-init(autoreset=True)
+app = Flask(__name__)
 
 # ==============================================
 # ✅ KONFIGURASI
 # ==============================================
-NAMA_JSON = "data_regis.json"
-NAMA_TXT  = "daftar_regis.txt"
-BASE_URL  = "https://hosting.arxan.app"
+BASE_URL = "https://hosting.arxan.app"
 TIMEOUT = 15
 
-# 📋 Daftar User-Agent acak
+# 📋 Daftar User-Agent Acak
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0",
@@ -29,41 +28,34 @@ USER_AGENTS = [
 ]
 
 # ==============================================
-# 📋 Ambil Token
+# 🛠️ FUNGSI PENDUKUNG
 # ==============================================
 def get_token(sesi):
     try:
         r = sesi.get(f"{BASE_URL}/cart.php?a=add&domain=register", timeout=TIMEOUT)
         return re.search(r'name="token" value="([a-f0-9]{32,})"', r.text).group(1)
-    except Exception as e:
+    except:
         return None
 
-# ==============================================
-# 🖼️ Tampil QRIS
-# ==============================================
-def tampil_qr(kode):
+def buat_qr_base64(data):
     try:
-        import qrcode
-        qr = qrcode.QRCode(version=1, box_size=1, border=1)
-        qr.add_data(kode)
+        qr = qrcode.QRCode(version=1, box_size=6, border=2)
+        qr.add_data(data)
         qr.make(fit=True)
-        return "\n".join("".join("██" if b else "  " for b in baris) for baris in qr.get_matrix())
+        img = qr.make_image(fill="black", back_color="white")
+        buffer = BytesIO()
+        img.save(buffer, format="PNG")
+        return base64.b64encode(buffer.getvalue()).decode()
     except:
-        return "⚠️ QR tidak bisa dibuat"
+        return ""
 
-# ==============================================
-# 🚀 Proses Satu Domain
-# ==============================================
 def proses_domain(domain, email, password):
-    # Ambil User-Agent acak
     ua = random.choice(USER_AGENTS)
-
     sesi = requests.Session()
     sesi.headers.update({
         "User-Agent": ua,
         "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Encoding": "gzip, deflate, br"
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
     })
 
     hasil = {
@@ -71,31 +63,24 @@ def proses_domain(domain, email, password):
         "domain": domain,
         "email": email,
         "password": password,
-        "user_agent": ua,
         "harga": "-",
         "invoice": "-",
         "link": "-",
-        "qris": "-",
+        "qris": "",
         "status": "",
         "info": "-"
     }
-
-    print(Fore.YELLOW + f"ℹ️ Pakai UA: {ua[:60]}...")
 
     token = get_token(sesi)
     if not token:
         hasil["status"] = "❌ Gagal dapat token"
         return hasil
 
-    # Cek domain & harga
+    # Cek domain
     try:
         r_cek = sesi.post(
             f"{BASE_URL}/index.php?rp=/domain/check",
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "X-Requested-With": "XMLHttpRequest",
-                "Referer": f"{BASE_URL}/cart.php?a=add&domain=register"
-            },
+            headers={"Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest", "Referer": f"{BASE_URL}/cart.php?a=add&domain=register"},
             data={"token": token, "a": "checkDomain", "domain": domain, "type": "domain"},
             timeout=TIMEOUT
         )
@@ -112,20 +97,8 @@ def proses_domain(domain, email, password):
     # Masuk keranjang
     sesi.post(
         f"{BASE_URL}/cart.php",
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Referer": f"{BASE_URL}/cart.php?a=add&domain=register"
-        },
-        data={
-            "a": "addToCart",
-            "domain": domain,
-            "token": token,
-            "years": 1,
-            "idprotection": 0,
-            "dnsmanagement": 0,
-            "emailforwarding": 0,
-            "whois": 0
-        },
+        headers={"Content-Type": "application/x-www-form-urlencoded", "Referer": f"{BASE_URL}/cart.php?a=add&domain=register"},
+        data={"a": "addToCart", "domain": domain, "token": token, "years": 1, "idprotection": 0, "dnsmanagement": 0, "emailforwarding": 0, "whois": 0},
         timeout=TIMEOUT
     )
     time.sleep(0.4)
@@ -134,12 +107,7 @@ def proses_domain(domain, email, password):
     sesi.post(
         f"{BASE_URL}/cart.php?a=confdomains",
         headers={"Content-Type": "application/x-www-form-urlencoded"},
-        data={
-            "token": token,
-            "update": "true",
-            "domainns1": "kiki.bunny.net",
-            "domainns2": "coco.bunny.net"
-        },
+        data={"token": token, "update": "true", "domainns1": "kiki.bunny.net", "domainns2": "coco.bunny.net"},
         timeout=TIMEOUT
     )
     time.sleep(0.4)
@@ -153,50 +121,34 @@ def proses_domain(domain, email, password):
     )
     time.sleep(0.4)
 
-    # Proses checkout
+    # Checkout
     res = sesi.post(
         f"{BASE_URL}/cart.php?a=checkout",
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Origin": BASE_URL,
-            "Referer": f"{BASE_URL}/cart.php?a=confdomains"
-        },
+        headers={"Content-Type": "application/x-www-form-urlencoded", "Origin": BASE_URL, "Referer": f"{BASE_URL}/cart.php?a=confdomains"},
         data={
-            "token": token,
-            "checkout": "true",
-            "custtype": "new",
-            "firstname": "Budi",
-            "lastname": "Santoso",
-            "email": email,
-            "emailoptin": "0",
-            "phonenumber": "628123456789",
-            "address1": "Jl. Mawar No.1",
-            "city": "Sukabumi",
-            "state": "Jawa Barat",
-            "postcode": "43111",
-            "country": "ID",
-            "password": password,
-            "password2": password,
-            "securityqid": "0",
-            "securityans": "",
-            "paymentmethod": "duitkupop",
-            "accepttos": "on",
-            "marketingoptin": "0"
+            "token": token, "checkout": "true", "custtype": "new",
+            "firstname": "Budi", "lastname": "Santoso",
+            "email": email, "emailoptin": "0",
+            "phonenumber": "628123456789", "address1": "Jl. Mawar No.1",
+            "city": "Sukabumi", "state": "Jawa Barat", "postcode": "43111", "country": "ID",
+            "password": password, "password2": password,
+            "securityqid": "0", "securityans": "",
+            "paymentmethod": "duitkupop", "accepttos": "on", "marketingoptin": "0"
         },
-        timeout=20,
-        allow_redirects=True
+        timeout=20, allow_redirects=True
     )
 
     # Cek hasil
     if "viewinvoice.php" in res.text or "viewinvoice.php" in res.url:
         inv = re.search(r'viewinvoice\.php\?id=(\d+)', res.text + res.url)
         if inv:
-            hasil["invoice"] = inv.group(1)
-            hasil["link"] = f"{BASE_URL}/viewinvoice.php?id={inv.group(1)}"
+            inv_id = inv.group(1)
+            hasil["invoice"] = inv_id
+            hasil["link"] = f"{BASE_URL}/viewinvoice.php?id={inv_id}"
             hasil["status"] = "✅ Berhasil"
             r_qr = sesi.get(hasil["link"], timeout=12)
             kode_qr = re.search(r'data-qr="([^"]+)"', r_qr.text)
-            hasil["qris"] = tampil_qr(kode_qr.group(1)) if kode_qr else "❌ QR tidak ada"
+            hasil["qris"] = buat_qr_base64(kode_qr.group(1)) if kode_qr else ""
     else:
         err = re.search(r'<div class="alert[^>]*>(.*?)</div>|<li>(.*?)</li>', res.text, re.S)
         hasil["info"] = (err.group(1) or err.group(2) or "Tidak ada pesan error")[:180].strip()
@@ -205,96 +157,117 @@ def proses_domain(domain, email, password):
     return hasil
 
 # ==============================================
-# 💾 Tampil & Simpan Hasil
+# 🎨 HALAMAN WEB + KOLOM INPUT
 # ==============================================
-def tampilkan_semua(daftar):
-    print(Fore.GREEN + "\n" + "=" * 60)
-    for no, h in enumerate(daftar, 1):
-        print(f"{Fore.CYAN}🔹 No.{no}")
-        print(f"🌐 Domain   : {h['domain']}")
-        print(f"💲 Harga    : {h['harga']}")
-        print(f"📧 Email    : {h['email']}")
-        print(f"🔑 Password : {h['password']}")
-        print(f"📊 Status   : {h['status']}")
-        if "✅" in h["status"]:
-            print(f"🧾 Invoice  : {h['invoice']}")
-            print(f"🔗 Link     : {h['link']}")
-            print(f"📱 QRIS     :\n{h['qris']}")
-        if "❌" in h["status"]:
-            print(f"ℹ️ Info     : {h['info']}")
-        print(Fore.GREEN + "-" * 60)
+HALAMAN_HTML = """
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tools Daftar Domain</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen p-4 md:p-8">
+    <div class="max-w-3xl mx-auto bg-white rounded-xl shadow-lg p-6">
+        <h1 class="text-2xl font-bold text-center text-indigo-700 mb-6">📝 Tools Daftar Domain</h1>
 
-def simpan_semua(daftar):
-    with open(NAMA_JSON, "w", encoding="utf-8") as f:
-        json.dump(daftar, f, indent=2, ensure_ascii=False)
-    with open(NAMA_TXT, "a", encoding="utf-8") as f:
-        for h in daftar:
-            f.write(f"""
-WAKTU   : {h['waktu']}
-DOMAIN  : {h['domain']}
-HARGA   : {h['harga']}
-EMAIL   : {h['email']}
-PASS    : {h['password']}
-UA      : {h['user_agent']}
-STATUS  : {h['status']}
-INFO    : {h['info']}
-----------------------------------------
-""")
+        <!-- Form Input -->
+        <form id="formInput" class="space-y-4">
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Jumlah Domain</label>
+                <input type="number" id="jumlah" min="1" value="1" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
+            </div>
 
-# ==============================================
-# 🚀 Menu Utama
-# ==============================================
-if __name__ == "__main__":
-    os.system("clear" if os.name == "posix" else "cls")
-    print(Fore.MAGENTA + Style.BRIGHT + """
-╔══════════════════════════════════════════════╗
-║          TOOLS DAFTAR DOMAIN                 ║
-║ ✅ User-Agent Acak | Tanpa Proxy             ║
-╚══════════════════════════════════════════════╝
-    """)
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Daftar Domain (pisah baris baru)</label>
+                <textarea id="daftar_domain" rows="3" placeholder="Contoh:&#10;namasaya.biz.id&#10;usahaanda.biz.id" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required></textarea>
+            </div>
 
-    # Jumlah domain
-    while True:
-        try:
-            jml = int(input(Fore.YELLOW + "\n🔢 Mau proses berapa domain? : "))
-            if jml > 0:
-                break
-            print(Fore.RED + "❌ Angka harus lebih dari 0!")
-        except:
-            print(Fore.RED + "❌ Masukkan angka yang benar!")
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                <input type="email" id="email" placeholder="contoh@mail.tm" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
+            </div>
 
-    # Masukkan domain
-    daftar_domain = []
-    for i in range(1, jml + 1):
-        while True:
-            d = input(Fore.YELLOW + f"📝 Domain ke-{i}: ").strip().lower()
-            if "." in d and len(d) > 5:
-                daftar_domain.append(d)
-                break
-            print(Fore.RED + "⚠️ Format salah! Contoh: namamu.biz.id")
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Password Akun</label>
+                <input type="text" id="password" placeholder="Minimal 6 karakter" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
+            </div>
 
-    # Masukkan email
-    while True:
-        email = input(Fore.YELLOW + "\n📧 Masukkan email: ").strip().lower()
-        if "@" in email and "." in email.split("@")[-1]:
-            break
-        print(Fore.RED + "❌ Format email salah!")
+            <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 rounded-lg transition">🚀 Proses Sekarang</button>
+        </form>
 
-    # Masukkan password
-    while True:
-        pw = input(Fore.YELLOW + "🔑 Masukkan password akun: ").strip()
-        if len(pw) >= 6:
-            break
-        print(Fore.RED + "❌ Password minimal 6 karakter!")
+        <!-- Hasil Proses -->
+        <div id="hasil" class="mt-8 hidden"></div>
+    </div>
 
-    # Proses semua
-    print(Fore.BLUE + "\n🔃 Memproses...\n")
+    <script>
+        const form = document.getElementById('formInput');
+        const hasilDiv = document.getElementById('hasil');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hasilDiv.innerHTML = '<div class="text-center py-6 text-gray-600">⏳ Sedang diproses, tunggu sebentar...</div>';
+            hasilDiv.classList.remove('hidden');
+
+            const data = {
+                jumlah: document.getElementById('jumlah').value,
+                domains: document.getElementById('daftar_domain').value.split('\\n').map(d => d.trim()).filter(d => d),
+                email: document.getElementById('email').value.trim(),
+                password: document.getElementById('password').value.trim()
+            };
+
+            try {
+                const res = await fetch('/proses', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+                const hasil = await res.json();
+
+                let html = `<h2 class="text-xl font-semibold text-green-700 mb-4">✅ Hasil Proses</h2>`;
+                hasil.forEach((item, i) => {
+                    html += `
+                    <div class="border rounded-lg p-4 mb-4 ${item.status.includes('✅') ? 'bg-green-50' : 'bg-red-50'}">
+                        <h3 class="font-bold text-lg mb-2">No.${i+1} - ${item.domain}</h3>
+                        <p><strong>Status:</strong> ${item.status}</p>
+                        <p><strong>Harga:</strong> ${item.harga}</p>
+                        <p><strong>Email:</strong> ${item.email}</p>
+                        <p><strong>Password:</strong> ${item.password}</p>
+                        ${item.invoice !== '-' ? `<p><strong>Invoice:</strong> ${item.invoice}</p>` : ''}
+                        ${item.link !== '-' ? `<p><strong>Link:</strong> <a href="${item.link}" target="_blank" class="text-blue-600 underline">Buka Invoice</a></p>` : ''}
+                        ${item.qris ? `<p class="mt-2"><strong>QRIS:</strong><br><img src="data:image/png;base64,${item.qris}" class="mt-1 w-32 h-32"></p>` : ''}
+                        ${item.info !== '-' ? `<p class="mt-2 text-sm text-gray-700"><strong>Info:</strong> ${item.info}</p>` : ''}
+                    </div>`;
+                });
+
+                hasilDiv.innerHTML = html;
+            } catch (err) {
+                hasilDiv.innerHTML = `<div class="text-red-600 p-4 border rounded-lg">❌ Terjadi kesalahan: ${err}</div>`;
+            }
+        });
+    </script>
+</body>
+</html>
+"""
+
+@app.route('/')
+def halaman_utama():
+    return render_template_string(HALAMAN_HTML)
+
+@app.route('/proses', methods=['POST'])
+def jalankan_proses():
+    data = request.get_json()
+    daftar_domain = data.get('domains', [])
+    email = data.get('email', '')
+    password = data.get('password', '')
+
     hasil_akhir = []
-    for d in daftar_domain:
-        print(Fore.CYAN + f"➡️ Memproses: {d}")
-        hasil_akhir.append(proses_domain(d, email, pw))
+    for domain in daftar_domain:
+        hasil_akhir.append(proses_domain(domain, email, password))
         time.sleep(0.8)
 
-    tampilkan_semua(hasil_akhir)
-    simpan_semua(hasil_akhir)
-    print(Fore.GREEN + "\n✅ Selesai!")
+    return jsonify(hasil_akhir)
+
+if __name__ == '__main__':
+    app.run(debug=True)
