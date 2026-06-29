@@ -14,69 +14,60 @@ app = Flask(__name__)
 # ✅ KONFIGURASI
 # ==============================================
 BASE_URL = "https://hosting.arxan.app"
-TIMEOUT = 15
+TIMEOUT = 25
 MAX_DOMAIN = 50
 
-# 🤖 CAPTCHA SOLVER CONFIG
-API_KEY_CAPTCHA = "5258c9a9-4205-4c62-9b1c-2f51fa674902"
-CAPTCHA_API = "https://v1.captchasolv.com/solve"
-HCAPTCHA_SITEKEY = "a5f74b19-9e6a-4ff0-a1b3-8d1201791129"  # Kunci hCaptcha Arxan
+# 🤖 CAPTCHA SOLVER (sudah disesuaikan buat tipe gambar)
+API_KEY = "5258c9a9-4205-4c62-9b1c-2f51fa674902"
+API_SOLVE = "https://v1.captchasolv.com/solve"
+API_RESULT = "https://v1.captchasolv.com/getTaskResult"
+HCAPTCHA_SITEKEY = "a5f74b19-9e6a-4ff0-a1b3-8d1201791129"
 
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
-    "Mozilla/5.0 (Linux; Android 14; SM-S921B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; Redmi Note 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 10; M2006C3MG Build/QP1A.190711.020) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.91 Mobile Safari/537.36"
 ]
 
 # ==============================================
-# 🛠️ FUNGSI PENDUKUNG
+# 🛠️ FUNGSI
 # ==============================================
 def solve_hcaptcha():
-    """Selesaikan hCaptcha pakai CaptchaSolv"""
-    payload = {
-        "clientKey": API_KEY_CAPTCHA,
-        "task": {
-            "type": "HCaptchaTaskProxyless",
-            "websiteURL": BASE_URL,
-            "websiteKey": HCAPTCHA_SITEKEY
-        }
-    }
+    """Selesaikan hCaptcha tipe gambar"""
     try:
-        res = requests.post(CAPTCHA_API, json=payload, timeout=120)
+        res = requests.post(API_SOLVE, json={
+            "clientKey": API_KEY,
+            "task": {
+                "type": "HCaptchaClassificationTask",
+                "websiteURL": BASE_URL,
+                "websiteKey": HCAPTCHA_SITEKEY,
+                "question": "Klik bunga yang tidak pernah dihinggapi lebah",
+                "images": []  # Kalau butuh kirim gambar nanti bisa ditambah
+            }
+        }, timeout=30)
         data = res.json()
         if data.get("errorId") != 0:
-            print(f"❌ Captcha Error: {data.get('errorDescription')}")
+            print("❌ Captcha:", data.get("errorDescription"))
             return None
+
         task_id = data["taskId"]
-        for _ in range(30):
+        for _ in range(40):
             time.sleep(2)
-            cek = requests.get(
-                f"https://v1.captchasolv.com/getTaskResult?clientKey={API_KEY_CAPTCHA}&taskId={task_id}"
-            ).json()
+            cek = requests.get(API_RESULT, params={
+                "clientKey": API_KEY, "taskId": task_id
+            }, timeout=15).json()
             if cek.get("status") == "ready":
-                print("✅ hCaptcha berhasil diselesaikan")
-                return cek["solution"]["gRecaptchaResponse"]
-            elif cek.get("errorId") != 0:
+                print("✅ hCaptcha selesai")
+                return cek["solution"]["token"]
+            if cek.get("errorId") != 0:
                 return None
         return None
     except Exception as e:
-        print(f"❌ Kesalahan captcha: {e}")
+        print("❌ Kesalahan captcha:", str(e))
         return None
 
-def get_token(sesi, captcha_token=None):
+def get_token(sesi):
     try:
         r = sesi.get(f"{BASE_URL}/cart.php?a=add&domain=register", timeout=TIMEOUT)
-        # Cek apakah ada halaman captcha
-        if "h-captcha" in r.text.lower() and captcha_token:
-            # Kirim verifikasi captcha
-            r = sesi.post(
-                f"{BASE_URL}/cart.php?a=add&domain=register",
-                data={"h-captcha-response": captcha_token},
-                timeout=TIMEOUT
-            )
         match = re.search(r'name="token" value="([a-f0-9]{32,})"', r.text)
         return match.group(1) if match else None
     except:
@@ -95,15 +86,13 @@ def buat_qr_base64(data):
         return ""
 
 # ==============================================
-# 🚀 ALUR SESUAI PERMINTAAN
+# 🚀 PROSES UTAMA
 # ==============================================
 def proses_semua(daftar_domain, email, password):
-    ua = random.choice(USER_AGENTS)
     sesi = requests.Session()
     sesi.headers.update({
-        "User-Agent": ua,
-        "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept-Language": "id-ID,id;q=0.9,en;q=0.8"
     })
 
     hasil = {
@@ -120,56 +109,48 @@ def proses_semua(daftar_domain, email, password):
         "keterangan": ""
     }
 
-    # 🔹 Lewati hCaptcha dulu
+    # 🔹 Lewati captcha
     captcha = solve_hcaptcha()
     if not captcha:
         hasil["status"] = "❌ Gagal lewati hCaptcha"
         return hasil
 
-    # Ambil token awal
-    token = get_token(sesi, captcha_token=captcha)
+    # Ambil token
+    token = get_token(sesi)
     if not token:
-        hasil["status"] = "❌ Gagal dapat token akses"
+        hasil["status"] = "❌ Gagal dapat token"
         return hasil
 
     total = 0
     domain_berhasil = []
 
-    # 🔹 Langkah 1: Masukkan semua domain ke keranjang
+    # 🔹 Masukkan ke keranjang
     for domain in daftar_domain:
         try:
-            # Cek ketersediaan
             cek = sesi.post(
                 f"{BASE_URL}/index.php?rp=/domain/check",
-                headers={"Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest", "Referer": f"{BASE_URL}/cart.php?a=add&domain=register"},
+                headers={"X-Requested-With": "XMLHttpRequest", "Referer": f"{BASE_URL}/cart.php?a=add&domain=register"},
                 data={"token": token, "a": "checkDomain", "domain": domain, "type": "domain"},
                 timeout=TIMEOUT
             )
-
             if "available" not in cek.text.lower():
                 hasil["keterangan"] += f"❌ {domain} tidak tersedia | "
                 continue
 
-            # Ambil harga
             hrg = re.search(r'Rp\s*(\d+)', cek.text)
-            if hrg:
-                total += int(hrg.group(1))
+            if hrg: total += int(hrg.group(1))
 
-            # Masuk ke keranjang
             sesi.post(
                 f"{BASE_URL}/cart.php",
-                headers={"Content-Type": "application/x-www-form-urlencoded", "Referer": f"{BASE_URL}/cart.php?a=add&domain=register"},
+                headers={"Referer": f"{BASE_URL}/cart.php?a=add&domain=register"},
                 data={"a": "addToCart", "domain": domain, "token": token, "years": 1, "idprotection": 0, "dnsmanagement": 0, "emailforwarding": 0, "whois": 0},
                 timeout=TIMEOUT
             )
-
             domain_berhasil.append(domain)
-            hasil["keterangan"] += f"✅ {domain} masuk keranjang | "
-            time.sleep(0.6)
-
+            hasil["keterangan"] += f"✅ {domain} masuk | "
+            time.sleep(0.7)
         except Exception as e:
-            hasil["keterangan"] += f"⚠️ Gagal {domain}: {str(e)[:20]} | "
-            continue
+            hasil["keterangan"] += f"⚠️ {domain}: {str(e)[:20]} | "
 
     if not domain_berhasil:
         hasil["status"] = "❌ Tidak ada domain yang bisa diproses"
@@ -177,34 +158,17 @@ def proses_semua(daftar_domain, email, password):
 
     hasil["total_harga"] = f"Rp {total:,}"
 
-    # 🔹 Langkah 2: Setelah semua masuk, LANGSUNG buat pesanan
+    # 🔹 Proses checkout
     try:
-        # Atur nameserver
-        sesi.post(
-            f"{BASE_URL}/cart.php?a=confdomains",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={"token": token, "update": "true", "domainns1": "kiki.bunny.net", "domainns2": "coco.bunny.net"},
-            timeout=TIMEOUT
-        )
+        sesi.post(f"{BASE_URL}/cart.php?a=confdomains", data={"token": token, "update": "true", "domainns1": "kiki.bunny.net", "domainns2": "coco.bunny.net"}, timeout=TIMEOUT)
         time.sleep(0.5)
 
-        # Atur wilayah
-        sesi.post(
-            f"{BASE_URL}/cart.php?a=setstateandcountry&e=false",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={"token": token, "country": "ID", "state": "Jawa Barat", "ajax": 1},
-            timeout=TIMEOUT
-        )
+        sesi.post(f"{BASE_URL}/cart.php?a=setstateandcountry&e=false", data={"token": token, "country": "ID", "state": "Jawa Barat", "ajax": 1}, timeout=TIMEOUT)
         time.sleep(0.5)
 
-        # 🔹 PROSES ORDER / BUAT TAGIHAN
         res = sesi.post(
             f"{BASE_URL}/cart.php?a=checkout",
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Origin": BASE_URL,
-                "Referer": f"{BASE_URL}/cart.php?a=confdomains"
-            },
+            headers={"Origin": BASE_URL, "Referer": f"{BASE_URL}/cart.php?a=confdomains"},
             data={
                 "token": token,
                 "checkout": "true",
@@ -212,7 +176,6 @@ def proses_semua(daftar_domain, email, password):
                 "firstname": "Budi",
                 "lastname": "Santoso",
                 "email": email,
-                "emailoptin": "0",
                 "phonenumber": "628123456789",
                 "address1": "Jl. Mawar No.1",
                 "city": "Sukabumi",
@@ -228,31 +191,26 @@ def proses_semua(daftar_domain, email, password):
                 "accepttos": "on",
                 "marketingoptin": "0"
             },
-            timeout=25,
+            timeout=30,
             allow_redirects=True
         )
 
-        # 🔹 Ambil link invoice & QRIS
         if "viewinvoice.php" in res.text or "viewinvoice.php" in res.url:
             inv = re.search(r'viewinvoice\.php\?id=(\d+)', res.text + res.url)
             if inv:
                 hasil["invoice_id"] = inv.group(1)
                 hasil["link_invoice"] = f"{BASE_URL}/viewinvoice.php?id={inv.group(1)}"
-                hasil["status"] = f"✅ PESANAN BERHASIL DIBUAT | {len(domain_berhasil)} domain"
-                hasil["keterangan"] += "\n📌 Pembayaran dilakukan MANUAL lewat link/QRIS di bawah"
-
-                # Ambil kode QRIS
-                r_qr = sesi.get(hasil["link_invoice"], timeout=12)
+                hasil["status"] = f"✅ BERHASIL | {len(domain_berhasil)} domain"
+                r_qr = sesi.get(hasil["link_invoice"], timeout=15)
                 kode_qr = re.search(r'data-qr="([^"]+)"', r_qr.text)
                 if kode_qr:
                     hasil["qris"] = buat_qr_base64(kode_qr.group(1))
             else:
                 hasil["status"] = "❌ Gagal dapat nomor invoice"
         else:
-            err = re.search(r'<div class="alert[^>]*>(.*?)</div>|<li>(.*?)</li>', res.text, re.S)
-            pesan = (err.group(1) or err.group(2) or "Tidak diketahui")[:150]
-            hasil["status"] = "❌ Gagal buat pesanan"
-            hasil["keterangan"] += f" | Error: {pesan}"
+            err = re.search(r'<div class="alert[^>]*>(.*?)</div>', res.text, re.S)
+            hasil["status"] = "❌ Gagal checkout"
+            hasil["keterangan"] += f" | Pesan: {(err.group(1) if err else 'Tidak diketahui')[:100]}"
 
     except Exception as e:
         hasil["status"] = "❌ Kesalahan proses akhir"
@@ -275,87 +233,63 @@ HALAMAN_HTML = """
 <body class="bg-gray-100 min-h-screen p-4 md:p-8">
     <div class="max-w-3xl mx-auto bg-white rounded-xl shadow-lg p-6">
         <h1 class="text-2xl font-bold text-center text-indigo-700 mb-2">📝 Banyak Domain = 1 Tagihan</h1>
-        <p class="text-center text-gray-600 mb-6">✅ Lewati hCaptcha otomatis | Semua masuk keranjang → Buat pesanan</p>
+        <p class="text-center text-gray-600 mb-6">✅ Lewati hCaptcha gambar otomatis</p>
 
         <form id="formInput" class="space-y-4">
             <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Jumlah Domain (2 - 50)</label>
                 <input type="number" id="jumlah" min="2" max="50" value="2" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
             </div>
-
             <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Daftar Domain (1 baris = 1 domain)</label>
-                <textarea id="daftar_domain" rows="6" placeholder="Contoh:&#10;domain1.biz.id&#10;domain2.biz.id&#10;domain3.biz.id" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required></textarea>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Daftar Domain</label>
+                <textarea id="daftar_domain" rows="6" placeholder="Contoh:&#10;duniakutecnok.biz.id&#10;serbamulti.biz.id" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required></textarea>
             </div>
-
             <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Email Akun</label>
                 <input type="email" id="email" placeholder="contoh@mail.com" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
             </div>
-
             <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Password Akun</label>
                 <input type="text" id="password" placeholder="Minimal 6 karakter" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
             </div>
-
-            <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 rounded-lg transition">🚀 Proses & Buat Pesanan</button>
+            <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 rounded-lg transition">🚀 Proses Sekarang</button>
         </form>
-
         <div id="hasil" class="mt-8 hidden"></div>
     </div>
-
     <script>
         const form = document.getElementById('formInput');
         const hasilDiv = document.getElementById('hasil');
-
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
-            hasilDiv.innerHTML = '<div class="text-center py-6 text-gray-600">⏳ Menyelesaikan hCaptcha & memproses domain...<br>Mohon tunggu sebentar!</div>';
+            hasilDiv.innerHTML = '<div class="text-center py-6 text-gray-600">⏳ Memproses hCaptcha gambar... Mohon tunggu!</div>';
             hasilDiv.classList.remove('hidden');
-
             const domains = document.getElementById('daftar_domain').value.split('\\n').map(d => d.trim()).filter(d => d);
             const jumlah = parseInt(document.getElementById('jumlah').value);
-
             if (domains.length !== jumlah) {
-                hasilDiv.innerHTML = `<div class="text-red-600 p-4 border rounded-lg">❌ Jumlah domain tidak sesuai!</div>`;
+                hasilDiv.innerHTML = `<div class="text-red-600 p-4 rounded">❌ Jumlah domain tidak cocok!</div>`;
                 return;
             }
-
-            if (jumlah < 2 || jumlah > 50) {
-                hasilDiv.innerHTML = `<div class="text-red-600 p-4 border rounded-lg">❌ Minimal 2, maksimal 50 domain!</div>`;
-                return;
-            }
-
             const data = { domains, email: document.getElementById('email').value.trim(), password: document.getElementById('password').value.trim() };
-
             try {
                 const res = await fetch('/proses', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
                 const h = await res.json();
-
-                let html = `<h2 class="text-xl font-semibold text-green-700 mb-4">📄 Ringkasan Pesanan</h2>`;
-                html += `<div class="border rounded-lg p-5 ${h.status.includes('✅') ? 'bg-green-50' : 'bg-red-50'}">`;
+                let html = `<h2 class="text-xl font-semibold mb-4">📄 Hasil Proses</h2>`;
+                html += `<div class="p-5 rounded border ${h.status.includes('✅') ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}">`;
                 html += `<p><strong>Status:</strong> ${h.status}</p>`;
                 html += `<p><strong>Jumlah Domain:</strong> ${h.jumlah}</p>`;
-                html += `<p><strong>Daftar Domain:</strong><br>• ${h.daftar.join('<br>• ')}</p>`;
-                html += `<p class="text-lg font-bold mt-3"><strong>Total Bayar:</strong> ${h.total_harga}</p>`;
-                html += `<p><strong>Email Akun:</strong> ${h.email}</p>`;
-                html += `<p><strong>Password:</strong> ${h.password}</p>`;
-
+                html += `<p><strong>Daftar:</strong><br>• ${h.daftar.join('<br>• ')}</p>`;
+                html += `<p class="text-lg font-bold mt-2">Total: ${h.total_harga}</p>`;
                 if (h.invoice_id !== '-') {
-                    html += `<hr class="my-3">`;
-                    html += `<p><strong>Nomor Invoice:</strong> ${h.invoice_id}</p>`;
-                    html += `<p><strong>Link Tagihan:</strong> <a href="${h.link_invoice}" target="_blank" class="text-blue-600 font-medium underline">${h.link_invoice}</a></p>`;
-                    if (h.qris) html += `<p class="mt-3"><strong>QRIS Bayar:</strong><br><img src="data:image/png;base64,${h.qris}" class="mt-2 w-40 h-40 border p-1 rounded"></p>`;
-                    html += `<p class="mt-2 text-sm text-orange-600 font-medium">💡 Lakukan pembayaran secara manual lewat link atau QRIS di atas</p>`;
+                    html += `<hr class="my-2">`;
+                    html += `<p>Invoice: ${h.invoice_id}</p>`;
+                    html += `<p>Link: <a href="${h.link_invoice}" target="_blank" class="text-blue-600 underline">${h.link_invoice}</a></p>`;
+                    if (h.qris) html += `<p class="mt-2">QRIS:<br><img src="data:image/png;base64,${h.qris}" class="w-40 h-40 mt-1 border rounded"></p>`;
                 }
-
-                html += `<p class="mt-3 text-sm text-gray-600"><strong>Keterangan:</strong><br>${h.keterangan}</p>`;
+                html += `<p class="mt-2 text-sm"><strong>Keterangan:</strong><br>${h.keterangan}</p>`;
                 html += `</div>`;
-
                 hasilDiv.innerHTML = html;
-
             } catch (err) {
-                hasilDiv.innerHTML = `<div class="text-red-600 p-4 border rounded-lg">❌ Terjadi kesalahan sistem: ${err}</div>`;
+                hasilDiv.innerHTML = `<div class="text-red-600 p-4 rounded">❌ Kesalahan: ${err}</div>`;
             }
         });
     </script>
@@ -376,4 +310,4 @@ def jalankan_proses():
     return jsonify(proses_semua(daftar_domain, email, password))
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, host='0.0.0.0')
