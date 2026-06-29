@@ -14,9 +14,9 @@ app = Flask(__name__)
 # ✅ KONFIGURASI
 # ==============================================
 BASE_URL = "https://hosting.arxan.app"
+HCAPTCHA_SITEKEY = "a5f74b19-9e6a-4ff0-a1b3-8d1201791129"
 TIMEOUT = 30
 MAX_DOMAIN = 50
-HCAPTCHA_SITEKEY = "a5f74b19-9e6a-4ff0-a1b3-8d1201791129"
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -35,7 +35,6 @@ def get_token(sesi):
         return None
 
 def cek_domain_tersedia(sesi, token, domain):
-    """Perbaiki cara cek domain sesuai format asli WHMCS"""
     try:
         r = sesi.post(
             f"{BASE_URL}/cart.php?a=checkdomain",
@@ -53,13 +52,8 @@ def cek_domain_tersedia(sesi, token, domain):
             },
             timeout=TIMEOUT
         )
-        txt = r.text.lower()
-        # Cek tanda ketersediaan yang sebenarnya
-        if "available" in txt or "dapat didaftarkan" in txt:
-            return True
-        return False
-    except Exception as e:
-        print(f"⚠️ Cek {domain} error: {e}")
+        return "available" in r.text.lower()
+    except:
         return False
 
 def tambah_ke_keranjang(sesi, token, domain):
@@ -97,7 +91,7 @@ def buat_qr_base64(data):
 # ==============================================
 # 🚀 PROSES UTAMA
 # ==============================================
-def proses_semua(daftar_domain, email, password):
+def proses_semua(daftar_domain, email, password, captcha_token=""):
     sesi = requests.Session()
     sesi.headers.update({
         "User-Agent": random.choice(USER_AGENTS),
@@ -119,7 +113,10 @@ def proses_semua(daftar_domain, email, password):
         "keterangan": ""
     }
 
-    # Ambil token
+    if len(password) < 8 or len(password) > 64:
+        hasil["status"] = "❌ Password harus 8–64 karakter"
+        return hasil
+
     token = get_token(sesi)
     if not token:
         hasil["status"] = "❌ Gagal dapat token akses"
@@ -128,30 +125,27 @@ def proses_semua(daftar_domain, email, password):
     domain_berhasil = []
     total = 0
 
-    # Proses per domain
     for domain in daftar_domain:
         if not domain:
             continue
-        # Cek dulu
-        if not cek_domain_tersedia(sesi, token, domain):
-            hasil["keterangan"] += f"❌ {domain} tidak tersedia/tidak valid | "
-            continue
-        # Masuk keranjang
-        if tambah_ke_keranjang(sesi, token, domain):
-            domain_berhasil.append(domain)
-            total += 12000 # Harga standar .biz.id, sesuaikan nanti
-            hasil["keterangan"] += f"✅ {domain} masuk keranjang | "
+        if cek_domain_tersedia(sesi, token, domain):
+            if tambah_ke_keranjang(sesi, token, domain):
+                domain_berhasil.append(domain)
+                total += 1
+                hasil["keterangan"] += f"✅ {domain} masuk keranjang | "
+            else:
+                hasil["keterangan"] += f"⚠️ {domain} gagal masuk keranjang | "
         else:
-            hasil["keterangan"] += f"⚠️ {domain} gagal masuk keranjang | "
-        time.sleep(0.6)
+            hasil["keterangan"] += f"❌ {domain} tidak tersedia | "
+        time.sleep(0.5)
 
     if not domain_berhasil:
         hasil["status"] = "❌ Tidak ada domain yang bisa diproses"
         return hasil
 
-    hasil["total_harga"] = f"Rp {total:,}"
+    hasil["total_harga"] = f"Rp {total * 1:,}"
 
-    # Checkout
+    # Proses Checkout
     try:
         sesi.post(
             f"{BASE_URL}/cart.php?a=confdomains",
@@ -185,7 +179,10 @@ def proses_semua(daftar_domain, email, password):
                 "country": "ID",
                 "password": password,
                 "password2": password,
-                "h-captcha-response": "",
+                "securityqid": "0",
+                "securityans": "",
+                "h-captcha-response": captcha_token.strip(),
+                "g-recaptcha-response": captcha_token.strip(),
                 "paymentmethod": "duitkupop",
                 "accepttos": "on"
             },
@@ -204,12 +201,16 @@ def proses_semua(daftar_domain, email, password):
                 if kode_qr:
                     hasil["qris"] = buat_qr_base64(kode_qr.group(1))
             else:
-                hasil["status"] = "⚠️ Berhasil masuk, tapi tidak dapat nomor invoice"
+                hasil["status"] = "⚠️ Berhasil masuk, tidak dapat nomor invoice"
         else:
             err = re.search(r'<div class="alert[^>]*>(.*?)</div>', res.text, re.S)
-            pesan = (err.group(1) if err else "Minta verifikasi hCaptcha")[:120]
-            hasil["status"] = "ℹ️ Proses sampai tahap checkout"
-            hasil["keterangan"] += f" | Pesan situs: {pesan}"
+            pesan = (err.group(1) if err else "Masukkan jawaban hCaptcha")[:120]
+            if "captcha" in pesan.lower():
+                hasil["status"] = "🔐 Perlu verifikasi hCaptcha"
+                hasil["keterangan"] += f" | Silakan selesaikan captcha di bawah"
+            else:
+                hasil["status"] = "ℹ️ Siap checkout"
+                hasil["keterangan"] += f" | Pesan: {pesan}"
 
     except Exception as e:
         hasil["status"] = "❌ Kesalahan proses akhir"
@@ -218,9 +219,9 @@ def proses_semua(daftar_domain, email, password):
     return hasil
 
 # ==============================================
-# 🎨 HALAMAN WEB
+# 🎨 HALAMAN WEB DENGAN CAPTCHA TERTANAM
 # ==============================================
-HALAMAN_HTML = """
+HALAMAN_HTML = f"""
 <!DOCTYPE html>
 <html lang="id">
 <head>
@@ -228,11 +229,13 @@ HALAMAN_HTML = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Tools Beli Domain</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Muat skrip hCaptcha resmi -->
+    <script src="https://js.hcaptcha.com/1/api.js" async defer></script>
 </head>
 <body class="bg-gray-100 min-h-screen p-4 md:p-8">
     <div class="max-w-3xl mx-auto bg-white rounded-xl shadow-lg p-6">
         <h1 class="text-2xl font-bold text-center text-indigo-700 mb-2">📝 Banyak Domain = 1 Tagihan</h1>
-        <p class="text-center text-gray-600 mb-6">✅ Cek domain & keranjang diperbaiki</p>
+        <p class="text-center text-gray-600 mb-6">✅ Semua proses di sini saja, tidak perlu buka situs lain</p>
 
         <form id="formInput" class="space-y-4">
             <div>
@@ -241,56 +244,104 @@ HALAMAN_HTML = """
             </div>
             <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Daftar Domain</label>
-                <textarea id="daftar_domain" rows="6" placeholder="Contoh:&#10;duniakutecnok.biz.id&#10;serbamulti.biz.id" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required></textarea>
+                <textarea id="daftar_domain" rows="5" placeholder="Contoh:&#10;duniakutecnok.biz.id&#10;serbamulti.biz.id" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required></textarea>
             </div>
             <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Email Akun</label>
-                <input type="email" id="email" placeholder="contoh@mail.com" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
+                <input type="email" id="email" placeholder="contoh@gmail.com" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
             </div>
             <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Password Akun</label>
-                <input type="text" id="password" placeholder="Minimal 6 karakter" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Password Akun (8 - 64 karakter)</label>
+                <input type="text" id="password" placeholder="Minimal 8 karakter" class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" required>
             </div>
+
+            <!-- ✅ CAPTCHA MUNCUL DI SINI SESUAI WEB ASLI -->
+            <div id="captcha_area" class="p-3 border rounded-lg bg-gray-50 hidden">
+                <p class="text-sm font-medium text-gray-700 mb-2">🔐 Verifikasi Keamanan</p>
+                <div class="h-captcha" data-sitekey="{HCAPTCHA_SITEKEY}" data-callback="onCaptchaSuccess"></div>
+                <input type="hidden" id="captcha_token" value="">
+            </div>
+
             <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 rounded-lg transition">🚀 Proses Sekarang</button>
         </form>
+
         <div id="hasil" class="mt-8 hidden"></div>
     </div>
+
     <script>
+        let captchaSelesai = false;
+
+        // Simpan jawaban captcha kalau berhasil
+        function onCaptchaSuccess(token) {{
+            document.getElementById('captcha_token').value = token;
+            captchaSelesai = true;
+        }}
+
         const form = document.getElementById('formInput');
         const hasilDiv = document.getElementById('hasil');
-        form.addEventListener('submit', async (e) => {
+        const captchaArea = document.getElementById('captcha_area');
+
+        form.addEventListener('submit', async (e) => {{
             e.preventDefault();
+            captchaArea.classList.add('hidden');
+            captchaSelesai = false;
+
             hasilDiv.innerHTML = '<div class="text-center py-6 text-gray-600">⏳ Memproses cek domain & keranjang...</div>';
             hasilDiv.classList.remove('hidden');
+
             const domains = document.getElementById('daftar_domain').value.split('\\n').map(d => d.trim()).filter(d => d);
             const jumlah = parseInt(document.getElementById('jumlah').value);
-            if (domains.length !== jumlah) {
+            const captcha = document.getElementById('captcha_token').value.trim();
+
+            if (domains.length !== jumlah) {{
                 hasilDiv.innerHTML = `<div class="text-red-600 p-4 rounded">❌ Jumlah domain tidak cocok!</div>`;
                 return;
-            }
-            const data = { domains, email: document.getElementById('email').value.trim(), password: document.getElementById('password').value.trim() };
-            try {
-                const res = await fetch('/proses', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+            }}
+
+            const data = {{
+                domains: domains,
+                email: document.getElementById('email').value.trim(),
+                password: document.getElementById('password').value.trim(),
+                captcha_token: captcha
+            }};
+
+            try {{
+                const res = await fetch('/proses', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify(data)
+                }});
                 const h = await res.json();
+
+                // Kalau perlu captcha, tampilkan di sini
+                if (h.status.includes("verifikasi hCaptcha") || h.status.includes("Perlu verifikasi")) {{
+                    hasilDiv.innerHTML = `<div class="text-yellow-700 bg-yellow-50 p-4 rounded">🔐 Silakan selesaikan verifikasi di bawah, lalu klik Proses lagi</div>`;
+                    captchaArea.classList.remove('hidden');
+                    return;
+                }}
+
                 let html = `<h2 class="text-xl font-semibold mb-4">📄 Hasil Proses</h2>`;
-                html += `<div class="p-5 rounded border ${h.status.includes('✅') ? 'bg-green-50 border-green-200' : h.status.includes('ℹ️') ? 'bg-yellow-50 border-yellow-200' : 'bg-red-50 border-red-200'}">`;
-                html += `<p><strong>Status:</strong> ${h.status}</p>`;
-                html += `<p><strong>Jumlah Domain:</strong> ${h.jumlah}</p>`;
-                html += `<p><strong>Daftar:</strong><br>• ${h.daftar.join('<br>• ')}</p>`;
-                html += `<p class="text-lg font-bold mt-2">Total: ${h.total_harga}</p>`;
-                if (h.invoice_id !== '-') {
+                html += `<div class="p-5 rounded border ${{h.status.includes('✅') ? 'bg-green-50 border-green-200' : h.status.includes('ℹ️') ? 'bg-yellow-50 border-yellow-200' : 'bg-red-50 border-red-200'}}">`;
+                html += `<p><strong>Status:</strong> ${{h.status}}</p>`;
+                html += `<p><strong>Jumlah Domain:</strong> ${{h.jumlah}}</p>`;
+                html += `<p><strong>Daftar:</strong><br>• ${{h.daftar.join('<br>• ')}}</p>`;
+                html += `<p class="text-lg font-bold mt-2">Total: ${{h.total_harga}}</p>`;
+
+                if (h.invoice_id !== '-') {{
                     html += `<hr class="my-2">`;
-                    html += `<p>Invoice: ${h.invoice_id}</p>`;
-                    html += `<p>Link: <a href="${h.link_invoice}" target="_blank" class="text-blue-600 underline">${h.link_invoice}</a></p>`;
-                    if (h.qris) html += `<p class="mt-2">QRIS:<br><img src="data:image/png;base64,${h.qris}" class="w-40 h-40 mt-1 border rounded"></p>`;
-                }
-                html += `<p class="mt-2 text-sm"><strong>Keterangan:</strong><br>${h.keterangan}</p>`;
+                    html += `<p>Invoice: ${{h.invoice_id}}</p>`;
+                    html += `<p>Link: <a href="${{h.link_invoice}}" target="_blank" class="text-blue-600 underline">${{h.link_invoice}}</a></p>`;
+                    if (h.qris) html += `<p class="mt-2">QRIS:<br><img src="data:image/png;base64,${{h.qris}}" class="w-40 h-40 mt-1 border rounded"></p>`;
+                }}
+
+                html += `<p class="mt-2 text-sm"><strong>Keterangan:</strong><br>${{h.keterangan}}</p>`;
                 html += `</div>`;
+
                 hasilDiv.innerHTML = html;
-            } catch (err) {
-                hasilDiv.innerHTML = `<div class="text-red-600 p-4 rounded">❌ Kesalahan: ${err}</div>`;
-            }
-        });
+            }} catch (err) {{
+                hasilDiv.innerHTML = `<div class="text-red-600 p-4 rounded">❌ Kesalahan: ${{err}}</div>`;
+            }}
+        }});
     </script>
 </body>
 </html>
@@ -306,8 +357,8 @@ def jalankan_proses():
     daftar_domain = data.get('domains', [])
     email = data.get('email', '')
     password = data.get('password', '')
-    return jsonify(proses_semua(daftar_domain, email, password))
+    captcha = data.get('captcha_token', '')
+    return jsonify(proses_semua(daftar_domain, email, password, captcha))
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0')
-        
