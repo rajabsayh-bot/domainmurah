@@ -17,6 +17,11 @@ BASE_URL = "https://hosting.arxan.app"
 TIMEOUT = 15
 MAX_DOMAIN = 50
 
+# 🤖 CAPTCHA SOLVER CONFIG
+API_KEY_CAPTCHA = "5258c9a9-4205-4c62-9b1c-2f51fa674902"
+CAPTCHA_API = "https://v1.captchasolv.com/solve"
+HCAPTCHA_SITEKEY = "a5f74b19-9e6a-4ff0-a1b3-8d1201791129"  # Kunci hCaptcha Arxan
+
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0",
@@ -29,10 +34,51 @@ USER_AGENTS = [
 # ==============================================
 # 🛠️ FUNGSI PENDUKUNG
 # ==============================================
-def get_token(sesi):
+def solve_hcaptcha():
+    """Selesaikan hCaptcha pakai CaptchaSolv"""
+    payload = {
+        "clientKey": API_KEY_CAPTCHA,
+        "task": {
+            "type": "HCaptchaTaskProxyless",
+            "websiteURL": BASE_URL,
+            "websiteKey": HCAPTCHA_SITEKEY
+        }
+    }
+    try:
+        res = requests.post(CAPTCHA_API, json=payload, timeout=120)
+        data = res.json()
+        if data.get("errorId") != 0:
+            print(f"❌ Captcha Error: {data.get('errorDescription')}")
+            return None
+        task_id = data["taskId"]
+        for _ in range(30):
+            time.sleep(2)
+            cek = requests.get(
+                f"https://v1.captchasolv.com/getTaskResult?clientKey={API_KEY_CAPTCHA}&taskId={task_id}"
+            ).json()
+            if cek.get("status") == "ready":
+                print("✅ hCaptcha berhasil diselesaikan")
+                return cek["solution"]["gRecaptchaResponse"]
+            elif cek.get("errorId") != 0:
+                return None
+        return None
+    except Exception as e:
+        print(f"❌ Kesalahan captcha: {e}")
+        return None
+
+def get_token(sesi, captcha_token=None):
     try:
         r = sesi.get(f"{BASE_URL}/cart.php?a=add&domain=register", timeout=TIMEOUT)
-        return re.search(r'name="token" value="([a-f0-9]{32,})"', r.text).group(1)
+        # Cek apakah ada halaman captcha
+        if "h-captcha" in r.text.lower() and captcha_token:
+            # Kirim verifikasi captcha
+            r = sesi.post(
+                f"{BASE_URL}/cart.php?a=add&domain=register",
+                data={"h-captcha-response": captcha_token},
+                timeout=TIMEOUT
+            )
+        match = re.search(r'name="token" value="([a-f0-9]{32,})"', r.text)
+        return match.group(1) if match else None
     except:
         return None
 
@@ -74,8 +120,14 @@ def proses_semua(daftar_domain, email, password):
         "keterangan": ""
     }
 
+    # 🔹 Lewati hCaptcha dulu
+    captcha = solve_hcaptcha()
+    if not captcha:
+        hasil["status"] = "❌ Gagal lewati hCaptcha"
+        return hasil
+
     # Ambil token awal
-    token = get_token(sesi)
+    token = get_token(sesi, captcha_token=captcha)
     if not token:
         hasil["status"] = "❌ Gagal dapat token akses"
         return hasil
@@ -171,6 +223,7 @@ def proses_semua(daftar_domain, email, password):
                 "password2": password,
                 "securityqid": "0",
                 "securityans": "",
+                "h-captcha-response": captcha,
                 "paymentmethod": "duitkupop",
                 "accepttos": "on",
                 "marketingoptin": "0"
@@ -198,11 +251,11 @@ def proses_semua(daftar_domain, email, password):
         else:
             err = re.search(r'<div class="alert[^>]*>(.*?)</div>|<li>(.*?)</li>', res.text, re.S)
             pesan = (err.group(1) or err.group(2) or "Tidak diketahui")[:150]
-            hasil["status"] = f"❌ Gagal buat pesanan"
+            hasil["status"] = "❌ Gagal buat pesanan"
             hasil["keterangan"] += f" | Error: {pesan}"
 
     except Exception as e:
-        hasil["status"] = f"❌ Kesalahan proses akhir"
+        hasil["status"] = "❌ Kesalahan proses akhir"
         hasil["keterangan"] += f" | Detail: {str(e)[:50]}"
 
     return hasil
@@ -222,7 +275,7 @@ HALAMAN_HTML = """
 <body class="bg-gray-100 min-h-screen p-4 md:p-8">
     <div class="max-w-3xl mx-auto bg-white rounded-xl shadow-lg p-6">
         <h1 class="text-2xl font-bold text-center text-indigo-700 mb-2">📝 Banyak Domain = 1 Tagihan</h1>
-        <p class="text-center text-gray-600 mb-6">✅ Semua masuk keranjang → Langsung buat pesanan → Bayar manual</p>
+        <p class="text-center text-gray-600 mb-6">✅ Lewati hCaptcha otomatis | Semua masuk keranjang → Buat pesanan</p>
 
         <form id="formInput" class="space-y-4">
             <div>
@@ -257,7 +310,7 @@ HALAMAN_HTML = """
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
-            hasilDiv.innerHTML = '<div class="text-center py-6 text-gray-600">⏳ Memasukkan domain satu per satu...<br>Setelah selesai akan langsung buat tagihan!</div>';
+            hasilDiv.innerHTML = '<div class="text-center py-6 text-gray-600">⏳ Menyelesaikan hCaptcha & memproses domain...<br>Mohon tunggu sebentar!</div>';
             hasilDiv.classList.remove('hidden');
 
             const domains = document.getElementById('daftar_domain').value.split('\\n').map(d => d.trim()).filter(d => d);
